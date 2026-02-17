@@ -39,7 +39,7 @@ class ExamTypeSelectionPage extends StatelessWidget {
         type: ExamType.asthenopiaAssessment,
         name: '视疲劳评估',
         description: '针对视疲劳相关指标的综合评估',
-        icon: Icons.tired,
+        icon: Icons.visibility_off,
         color: Colors.purple,
         estimatedTime: '8-12分钟',
         indicatorCount: 10,

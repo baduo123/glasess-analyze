@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'exam_type_selection_page.dart';
+import 'patient_list_page.dart';
 
 class HomePage extends StatelessWidget {
   const HomePage({super.key});
@@ -75,7 +76,12 @@ class HomePage extends StatelessWidget {
             
             OutlinedButton.icon(
               onPressed: () {
-                // TODO: 导航到患者列表
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const PatientListPage(),
+                  ),
+                );
               },
               icon: const Icon(Icons.people_outline),
               label: const Text(
