@@ -8,6 +8,7 @@ import '../../data/repositories/patient_repository.dart';
 import '../../data/repositories/exam_repository.dart';
 import '../../domain/services/analysis_service.dart';
 import '../../domain/services/pdf_service.dart';
+import '../../core/constants/indicator_standards/indicator_standard_model.dart';
 import 'patient_list_page.dart';
 import 'patient_detail_page.dart';
 

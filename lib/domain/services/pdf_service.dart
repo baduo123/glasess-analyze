@@ -79,7 +79,7 @@ class PDFService {
       // 检查PDF大小
       final pdfSizeMB = bytes.length / (1024 * 1024);
       if (pdfSizeMB > _maxPdfSizeMB) {
-        throw Exception('生成的PDF文件过大(${pdfSizeMB.toStringAsFixed(2)}MB)，超过限制($_maxPdfSizeMBMB)');
+        throw Exception('生成的PDF文件过大(${pdfSizeMB.toStringAsFixed(2)}MB)，超过限制($_maxPdfSizeMB)');
       }
 
       // 确定保存路径
