@@ -21,6 +21,10 @@ class PDFService {
   static const PdfColor _warningColor = PdfColor.fromInt(0xFFFF9800);
   static const PdfColor _dangerColor = PdfColor.fromInt(0xFFF44336);
 
+  // 内存管理配置
+  static const int _maxPdfSizeMB = 50; // 最大PDF文件大小限制
+  static const int _maxCachedPages = 100; // 最大缓存页数
+
   /// 导出检查报告为PDF
   /// 
   /// [patient] - 患者信息
@@ -34,7 +38,12 @@ class PDFService {
     String? outputPath,
   }) async {
     try {
-      developer.log('开始生成PDF报告: ${patient.name}');
+      developer.log('开始生成PDF报告: ${patient.name}', name: 'PDFService');
+      
+      // 验证输入数据
+      if (patient.name.isEmpty) {
+        throw ArgumentError('患者姓名不能为空');
+      }
       
       // 创建PDF文档
       final pdf = pw.Document();
@@ -67,27 +76,51 @@ class PDFService {
       // 生成PDF字节
       final bytes = await pdf.save();
 
+      // 检查PDF大小
+      final pdfSizeMB = bytes.length / (1024 * 1024);
+      if (pdfSizeMB > _maxPdfSizeMB) {
+        throw Exception('生成的PDF文件过大(${pdfSizeMB.toStringAsFixed(2)}MB)，超过限制($_maxPdfSizeMBMB)');
+      }
+
       // 确定保存路径
       String filePath;
       if (outputPath != null) {
         filePath = outputPath;
       } else {
         final directory = await getApplicationDocumentsDirectory();
-        final fileName = 'report_${patient.name}_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.pdf';
+        // 清理文件名中的非法字符
+        final safeName = patient.name.replaceAll(RegExp(r'[<>"/\\|?*]'), '_');
+        final fileName = 'report_${safeName}_${DateFormat('yyyyMMdd_HHmmss').format(DateTime.now())}.pdf';
         filePath = '${directory.path}/reports/$fileName';
       }
 
       // 确保目录存在
       final file = File(filePath);
-      await file.parent.create(recursive: true);
+      try {
+        await file.parent.create(recursive: true);
+      } catch (e) {
+        throw Exception('无法创建报告目录: $e');
+      }
+
+      // 检查磁盘空间（简单检查）
+      try {
+        final stat = await file.parent.stat();
+        if (stat.size + bytes.length > 1024 * 1024 * 1024) {
+          developer.log('警告: 磁盘空间可能不足', name: 'PDFService');
+        }
+      } catch (e) {
+        // 忽略统计错误
+      }
 
       // 写入文件
-      await file.writeAsBytes(bytes);
+      await file.writeAsBytes(bytes, flush: true);
 
-      developer.log('PDF报告生成成功: $filePath');
+      developer.log('PDF报告生成成功: $filePath (${pdfSizeMB.toStringAsFixed(2)}MB)', name: 'PDFService');
       return filePath;
+    } on ArgumentError {
+      rethrow;
     } catch (e, stackTrace) {
-      developer.log('PDF生成失败', error: e, stackTrace: stackTrace);
+      developer.log('PDF生成失败', error: e, stackTrace: stackTrace, name: 'PDFService');
       throw Exception('PDF生成失败: $e');
     }
   }
@@ -632,12 +665,27 @@ class PDFService {
     try {
       final file = File(filePath);
       if (!await file.exists()) {
-        throw Exception('PDF文件不存在');
+        throw Exception('PDF文件不存在: $filePath');
+      }
+      
+      // 检查文件大小
+      final fileSize = await file.length();
+      final fileSizeMB = fileSize / (1024 * 1024);
+      if (fileSizeMB > 50) {
+        developer.log('警告: PDF文件较大(${fileSizeMB.toStringAsFixed(2)}MB)，分享可能需要较长时间', name: 'PDFService');
       }
       
       // 这里可以集成share_plus插件实现分享功能
-      developer.log('准备分享PDF: $filePath');
-    } catch (e) {
+      developer.log('准备分享PDF: $filePath (${fileSizeMB.toStringAsFixed(2)}MB)', name: 'PDFService');
+      
+      // TODO: 集成 share_plus 实现实际分享功能
+      // import 'package:share_plus/share_plus.dart';
+      // await Share.shareXFiles([XFile(filePath)], text: '视功能分析报告');
+    } on FileSystemException catch (e) {
+      developer.log('文件系统错误', error: e, name: 'PDFService');
+      throw Exception('访问PDF文件失败: ${e.message}');
+    } catch (e, stackTrace) {
+      developer.log('分享PDF失败', error: e, stackTrace: stackTrace, name: 'PDFService');
       throw Exception('分享PDF失败: $e');
     }
   }
@@ -652,17 +700,32 @@ class PDFService {
         return [];
       }
 
-      final files = await reportsDir
-          .list()
-          .where((entity) => entity is File && entity.path.endsWith('.pdf'))
-          .map((entity) => entity as File)
-          .toList();
+      final files = <File>[];
+      await for (final entity in reportsDir.list()) {
+        if (entity is File && entity.path.toLowerCase().endsWith('.pdf')) {
+          files.add(entity);
+        }
+      }
 
       // 按修改时间排序（最新的在前）
-      files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      files.sort((a, b) {
+        try {
+          return b.lastModifiedSync().compareTo(a.lastModifiedSync());
+        } catch (e) {
+          return 0;
+        }
+      });
       
-      return files;
-    } catch (e) {
+      // 限制返回数量，避免内存问题
+      final maxResults = files.length > 100 ? files.sublist(0, 100) : files;
+      
+      developer.log('获取到 ${maxResults.length} 个PDF报告', name: 'PDFService');
+      return maxResults;
+    } on FileSystemException catch (e) {
+      developer.log('获取报告列表失败', error: e, name: 'PDFService');
+      throw Exception('访问报告目录失败: ${e.message}');
+    } catch (e, stackTrace) {
+      developer.log('获取报告列表失败', error: e, stackTrace: stackTrace, name: 'PDFService');
       throw Exception('获取报告列表失败: $e');
     }
   }
@@ -672,11 +735,81 @@ class PDFService {
     try {
       final file = File(filePath);
       if (await file.exists()) {
-        await file.delete();
-        developer.log('PDF报告已删除: $filePath');
+        // 检查文件权限
+        try {
+          await file.delete();
+          developer.log('PDF报告已删除: $filePath', name: 'PDFService');
+        } on FileSystemException catch (e) {
+          if (e.osError?.errorCode == 13) {
+            throw Exception('没有权限删除该文件，请检查应用权限设置');
+          }
+          rethrow;
+        }
+      } else {
+        developer.log('PDF文件不存在，无需删除: $filePath', name: 'PDFService');
       }
-    } catch (e) {
+    } on FileSystemException catch (e) {
+      developer.log('删除PDF报告失败', error: e, name: 'PDFService');
+      throw Exception('删除报告失败: ${e.message}');
+    } catch (e, stackTrace) {
+      developer.log('删除PDF报告失败', error: e, stackTrace: stackTrace, name: 'PDFService');
       throw Exception('删除报告失败: $e');
+    }
+  }
+
+  /// 清理旧报告
+  /// 
+  /// [daysToKeep] - 保留最近几天的报告，默认30天
+  Future<int> cleanupOldReports({int daysToKeep = 30}) async {
+    try {
+      final cutoffDate = DateTime.now().subtract(Duration(days: daysToKeep));
+      final files = await getAllReports();
+      int deletedCount = 0;
+
+      for (final file in files) {
+        try {
+          final lastModified = await file.lastModified();
+          if (lastModified.isBefore(cutoffDate)) {
+            await file.delete();
+            deletedCount++;
+            developer.log('删除旧报告: ${file.path}', name: 'PDFService');
+          }
+        } catch (e) {
+          developer.log('删除报告失败: ${file.path}', error: e, name: 'PDFService');
+        }
+      }
+
+      developer.log('清理完成，删除了 $deletedCount 个旧报告', name: 'PDFService');
+      return deletedCount;
+    } catch (e, stackTrace) {
+      developer.log('清理旧报告失败', error: e, stackTrace: stackTrace, name: 'PDFService');
+      throw Exception('清理旧报告失败: $e');
+    }
+  }
+
+  /// 获取PDF文件信息
+  Future<Map<String, dynamic>> getPdfInfo(String filePath) async {
+    try {
+      final file = File(filePath);
+      if (!await file.exists()) {
+        throw Exception('PDF文件不存在: $filePath');
+      }
+
+      final stat = await file.stat();
+      return {
+        'path': filePath,
+        'size': stat.size,
+        'sizeMB': (stat.size / (1024 * 1024)).toStringAsFixed(2),
+        'created': stat.changed,
+        'modified': stat.modified,
+        'exists': true,
+      };
+    } catch (e) {
+      return {
+        'path': filePath,
+        'exists': false,
+        'error': e.toString(),
+      };
     }
   }
 }

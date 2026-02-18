@@ -35,6 +35,9 @@ class ExamRepository {
     bool isDraft = false,
   }) async {
     try {
+      // 验证输入数据
+      _validateExamData(examType: examType, examDate: examDate);
+
       final db = await _dbHelper.database;
       final now = DateTime.now();
       
@@ -60,8 +63,12 @@ class ExamRepository {
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
 
+      developer.log('创建检查记录成功: ${exam.id}', name: 'ExamRepository');
       return exam;
-    } catch (e) {
+    } on ArgumentError {
+      rethrow;
+    } catch (e, stackTrace) {
+      developer.log('创建检查记录失败', error: e, stackTrace: stackTrace, name: 'ExamRepository');
       throw Exception('创建检查记录失败: $e');
     }
   }
@@ -137,11 +144,16 @@ class ExamRepository {
     String? pdfPath,
   }) async {
     try {
+      // 验证日期
+      if (examDate != null) {
+        _validateExamData(examType: examType ?? ExamType.standardFullSet, examDate: examDate);
+      }
+
       final db = await _dbHelper.database;
       final existingExam = await getExamById(id);
       
       if (existingExam == null) {
-        throw Exception('检查记录不存在');
+        throw Exception('检查记录不存在: $id');
       }
 
       final updatedExam = ExamRecord(
@@ -161,15 +173,23 @@ class ExamRepository {
         json['indicator_values'] = jsonEncode(indicatorValues);
       }
 
-      await db.update(
+      final count = await db.update(
         'exam_records',
         json,
         where: 'id = ?',
         whereArgs: [id],
       );
 
+      if (count == 0) {
+        throw Exception('更新失败，检查记录可能已被删除');
+      }
+
+      developer.log('更新检查记录成功: $id', name: 'ExamRepository');
       return updatedExam;
-    } catch (e) {
+    } on ArgumentError {
+      rethrow;
+    } catch (e, stackTrace) {
+      developer.log('更新检查记录失败', error: e, stackTrace: stackTrace, name: 'ExamRepository');
       throw Exception('更新检查记录失败: $e');
     }
   }
@@ -178,16 +198,34 @@ class ExamRepository {
   Future<void> deleteExam(String id) async {
     try {
       final db = await _dbHelper.database;
-      final count = await db.delete(
-        'exam_records',
-        where: 'id = ?',
-        whereArgs: [id],
-      );
+      
+      // 使用事务确保数据一致性
+      await db.transaction((txn) async {
+        // 先获取记录以检查是否存在
+        final existing = await txn.query(
+          'exam_records',
+          where: 'id = ?',
+          whereArgs: [id],
+        );
 
-      if (count == 0) {
-        throw Exception('检查记录不存在');
-      }
-    } catch (e) {
+        if (existing.isEmpty) {
+          throw Exception('检查记录不存在: $id');
+        }
+
+        final count = await txn.delete(
+          'exam_records',
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+
+        if (count == 0) {
+          throw Exception('删除失败，检查记录可能已被删除');
+        }
+      });
+
+      developer.log('删除检查记录成功: $id', name: 'ExamRepository');
+    } catch (e, stackTrace) {
+      developer.log('删除检查记录失败', error: e, stackTrace: stackTrace, name: 'ExamRepository');
       throw Exception('删除检查记录失败: $e');
     }
   }

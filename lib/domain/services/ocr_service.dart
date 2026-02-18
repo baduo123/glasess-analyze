@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
@@ -44,19 +45,64 @@ class OCRService {
   OCRService._internal();
 
   // 百度AI OCR配置（需要替换为实际的API Key和Secret Key）
-  static const String _baiduApiKey = 'YOUR_BAIDU_API_KEY';
-  static const String _baiduSecretKey = 'YOUR_BAIDU_SECRET_KEY';
+  String _baiduApiKey = 'YOUR_BAIDU_API_KEY';
+  String _baiduSecretKey = 'YOUR_BAIDU_SECRET_KEY';
   static const String _baiduTokenUrl = 'https://aip.baidubce.com/oauth/2.0/token';
   static const String _baiduOcrUrl = 'https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic';
   static const String _baiduAccurateOcrUrl = 'https://aip.baidubce.com/rest/2.0/ocr/v1/accurate_basic';
 
   // 腾讯云OCR配置（需要替换为实际的SecretId和SecretKey）
-  static const String _tencentSecretId = 'YOUR_TENCENT_SECRET_ID';
-  static const String _tencentSecretKey = 'YOUR_TENCENT_SECRET_KEY';
+  String _tencentSecretId = 'YOUR_TENCENT_SECRET_ID';
+  String _tencentSecretKey = 'YOUR_TENCENT_SECRET_KEY';
   static const String _tencentOcrUrl = 'https://ocr.tencentcloudapi.com';
 
   String? _baiduAccessToken;
   DateTime? _tokenExpireTime;
+
+  // 超时和重试配置
+  static const Duration _connectionTimeout = Duration(seconds: 10);
+  static const Duration _receiveTimeout = Duration(seconds: 30);
+  static const int _maxRetries = 3;
+  static const Duration _retryDelay = Duration(seconds: 1);
+
+  /// 带重试机制的HTTP请求
+  Future<http.Response> _httpPostWithRetry(
+    Uri uri, {
+    Map<String, String>? headers,
+    Object? body,
+    Encoding? encoding,
+  }) async {
+    int attempts = 0;
+    
+    while (attempts < _maxRetries) {
+      try {
+        final response = await http.post(
+          uri,
+          headers: headers,
+          body: body,
+          encoding: encoding,
+        ).timeout(_receiveTimeout);
+        
+        return response;
+      } on TimeoutException {
+        attempts++;
+        developer.log('HTTP请求超时，重试 $attempts/$_maxRetries', name: 'OCRService');
+        if (attempts >= _maxRetries) {
+          throw TimeoutException('请求超时，已重试 $_maxRetries 次');
+        }
+        await Future.delayed(_retryDelay * attempts);
+      } on SocketException catch (e) {
+        attempts++;
+        developer.log('网络错误，重试 $attempts/$_maxRetries: $e', name: 'OCRService');
+        if (attempts >= _maxRetries) {
+          throw Exception('网络连接失败，请检查网络设置');
+        }
+        await Future.delayed(_retryDelay * attempts);
+      }
+    }
+    
+    throw Exception('请求失败');
+  }
 
   /// 识别检查单图片
   /// 
@@ -64,11 +110,17 @@ class OCRService {
   /// [provider] - OCR提供商: 'baidu' 或 'tencent'
   Future<OCRResult> recognizeMedicalReport(String imagePath, {String provider = 'baidu'}) async {
     try {
-      developer.log('开始OCR识别: $imagePath, 提供商: $provider');
+      developer.log('开始OCR识别: $imagePath, 提供商: $provider', name: 'OCRService');
       
       final file = File(imagePath);
       if (!await file.exists()) {
-        return OCRResult.failure('图片文件不存在');
+        return OCRResult.failure('图片文件不存在: $imagePath');
+      }
+
+      // 检查文件大小（限制10MB）
+      final fileSize = await file.length();
+      if (fileSize > 10 * 1024 * 1024) {
+        return OCRResult.failure('图片文件过大，请压缩后重试（最大10MB）');
       }
 
       if (provider == 'baidu') {
@@ -78,8 +130,12 @@ class OCRService {
       } else {
         return OCRResult.failure('不支持的OCR提供商: $provider');
       }
+    } on TimeoutException {
+      return OCRResult.failure('OCR识别超时，请检查网络连接后重试');
+    } on SocketException {
+      return OCRResult.failure('网络连接失败，请检查网络设置');
     } catch (e, stackTrace) {
-      developer.log('OCR识别失败', error: e, stackTrace: stackTrace);
+      developer.log('OCR识别失败', error: e, stackTrace: stackTrace, name: 'OCRService');
       return OCRResult.failure('OCR识别失败: $e');
     }
   }
@@ -90,15 +146,20 @@ class OCRService {
       // 获取访问令牌
       final token = await _getBaiduAccessToken();
       if (token == null) {
-        return OCRResult.failure('获取百度OCR访问令牌失败');
+        return OCRResult.failure('获取百度OCR访问令牌失败，请检查API密钥配置');
       }
 
       // 读取图片并转换为base64
       final bytes = await imageFile.readAsBytes();
       final base64Image = base64Encode(bytes);
 
-      // 调用百度OCR API
-      final response = await http.post(
+      // 检查base64大小
+      if (base64Image.length > 4 * 1024 * 1024) {
+        return OCRResult.failure('图片Base64编码后超过4MB，请压缩后重试');
+      }
+
+      // 调用百度OCR API（带重试）
+      final response = await _httpPostWithRetry(
         Uri.parse('$_baiduAccurateOcrUrl?access_token=$token'),
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded',
@@ -114,13 +175,15 @@ class OCRService {
         final result = jsonDecode(response.body);
         
         if (result['error_code'] != null) {
-          return OCRResult.failure('百度OCR错误: ${result['error_msg']}');
+          final errorMsg = result['error_msg'] ?? '未知错误';
+          developer.log('百度OCR API错误: ${result['error_code']} - $errorMsg', name: 'OCRService');
+          return OCRResult.failure('百度OCR错误: $errorMsg');
         }
 
         // 提取文本
         final wordsResult = result['words_result'] as List<dynamic>?;
         if (wordsResult == null || wordsResult.isEmpty) {
-          return OCRResult.failure('未识别到文本内容');
+          return OCRResult.failure('未识别到文本内容，请确保图片清晰且包含文字');
         }
 
         final StringBuffer textBuffer = StringBuffer();
@@ -133,14 +196,24 @@ class OCRService {
         // 解析结构化数据
         final structuredData = _parseMedicalReport(recognizedText);
 
+        developer.log('百度OCR识别成功，识别到 ${wordsResult.length} 行文本', name: 'OCRService');
+
         return OCRResult.success(
           text: recognizedText,
           structuredData: structuredData,
         );
+      } else if (response.statusCode == 401) {
+        // Token过期，清除缓存并重试
+        _baiduAccessToken = null;
+        _tokenExpireTime = null;
+        return OCRResult.failure('访问令牌已过期，请重试');
       } else {
-        return OCRResult.failure('百度OCR请求失败: ${response.statusCode}');
+        return OCRResult.failure('百度OCR请求失败，状态码: ${response.statusCode}');
       }
-    } catch (e) {
+    } on TimeoutException {
+      return OCRResult.failure('百度OCR识别超时，请检查网络连接');
+    } catch (e, stackTrace) {
+      developer.log('百度OCR识别失败', error: e, stackTrace: stackTrace, name: 'OCRService');
       return OCRResult.failure('百度OCR识别失败: $e');
     }
   }
@@ -152,6 +225,11 @@ class OCRService {
       final bytes = await imageFile.readAsBytes();
       final base64Image = base64Encode(bytes);
 
+      // 检查base64大小
+      if (base64Image.length > 4 * 1024 * 1024) {
+        return OCRResult.failure('图片Base64编码后超过4MB，请压缩后重试');
+      }
+
       // 构建请求
       final timestamp = DateTime.now().millisecondsSinceEpoch ~/ 1000;
       final payload = jsonEncode({
@@ -161,7 +239,8 @@ class OCRService {
       // 构建签名（简化版，实际生产环境需要完整的签名实现）
       final headers = await _buildTencentHeaders(payload, timestamp);
 
-      final response = await http.post(
+      // 调用腾讯云OCR API（带重试）
+      final response = await _httpPostWithRetry(
         Uri.parse(_tencentOcrUrl),
         headers: headers,
         body: payload,
@@ -171,12 +250,14 @@ class OCRService {
         final result = jsonDecode(response.body);
         
         if (result['Response']['Error'] != null) {
-          return OCRResult.failure('腾讯云OCR错误: ${result['Response']['Error']['Message']}');
+          final errorMsg = result['Response']['Error']['Message'] ?? '未知错误';
+          developer.log('腾讯云OCR API错误: $errorMsg', name: 'OCRService');
+          return OCRResult.failure('腾讯云OCR错误: $errorMsg');
         }
 
         final textDetections = result['Response']['TextDetections'] as List<dynamic>?;
         if (textDetections == null || textDetections.isEmpty) {
-          return OCRResult.failure('未识别到文本内容');
+          return OCRResult.failure('未识别到文本内容，请确保图片清晰且包含文字');
         }
 
         final StringBuffer textBuffer = StringBuffer();
@@ -187,14 +268,21 @@ class OCRService {
         final recognizedText = textBuffer.toString();
         final structuredData = _parseMedicalReport(recognizedText);
 
+        developer.log('腾讯云OCR识别成功，识别到 ${textDetections.length} 个文本区域', name: 'OCRService');
+
         return OCRResult.success(
           text: recognizedText,
           structuredData: structuredData,
         );
+      } else if (response.statusCode == 401) {
+        return OCRResult.failure('腾讯云OCR认证失败，请检查API密钥配置');
       } else {
-        return OCRResult.failure('腾讯云OCR请求失败: ${response.statusCode}');
+        return OCRResult.failure('腾讯云OCR请求失败，状态码: ${response.statusCode}');
       }
-    } catch (e) {
+    } on TimeoutException {
+      return OCRResult.failure('腾讯云OCR识别超时，请检查网络连接');
+    } catch (e, stackTrace) {
+      developer.log('腾讯云OCR识别失败', error: e, stackTrace: stackTrace, name: 'OCRService');
       return OCRResult.failure('腾讯云OCR识别失败: $e');
     }
   }
@@ -202,11 +290,19 @@ class OCRService {
   /// 获取百度访问令牌
   Future<String?> _getBaiduAccessToken() async {
     try {
-      // 检查现有令牌是否有效
+      // 检查现有令牌是否有效（提前1小时过期）
       if (_baiduAccessToken != null && 
           _tokenExpireTime != null && 
           DateTime.now().isBefore(_tokenExpireTime!)) {
+        developer.log('使用缓存的百度访问令牌', name: 'OCRService');
         return _baiduAccessToken;
+      }
+
+      // 检查API密钥是否已配置
+      if (_baiduApiKey == 'YOUR_BAIDU_API_KEY' || 
+          _baiduSecretKey == 'YOUR_BAIDU_SECRET_KEY') {
+        developer.log('百度OCR API密钥未配置', name: 'OCRService');
+        return null;
       }
 
       final response = await http.post(
@@ -216,18 +312,25 @@ class OCRService {
           'client_id': _baiduApiKey,
           'client_secret': _baiduSecretKey,
         },
-      );
+      ).timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
         final result = jsonDecode(response.body);
         _baiduAccessToken = result['access_token'];
         final expiresIn = result['expires_in'] as int? ?? 2592000;
+        // 提前1小时过期，避免边界问题
         _tokenExpireTime = DateTime.now().add(Duration(seconds: expiresIn - 3600));
+        developer.log('获取百度访问令牌成功，有效期至: $_tokenExpireTime', name: 'OCRService');
         return _baiduAccessToken;
+      } else {
+        developer.log('获取百度访问令牌失败，状态码: ${response.statusCode}', name: 'OCRService');
+        return null;
       }
+    } on TimeoutException {
+      developer.log('获取百度访问令牌超时', name: 'OCRService');
       return null;
-    } catch (e) {
-      developer.log('获取百度访问令牌失败', error: e);
+    } catch (e, stackTrace) {
+      developer.log('获取百度访问令牌失败', error: e, stackTrace: stackTrace, name: 'OCRService');
       return null;
     }
   }
@@ -383,14 +486,56 @@ class OCRService {
   }
 
   /// 配置百度OCR API密钥
+  /// 
+  /// [apiKey] - 百度AI平台的API Key
+  /// [secretKey] - 百度AI平台的Secret Key
   void configureBaiduOCR({required String apiKey, required String secretKey}) {
-    // 注意：实际应用中应该使用安全存储
-    // 这里仅作为示例
+    if (apiKey.isEmpty || secretKey.isEmpty) {
+      throw ArgumentError('API Key和Secret Key不能为空');
+    }
+    
+    _baiduApiKey = apiKey;
+    _baiduSecretKey = secretKey;
+    
+    // 清除缓存的token，下次请求时会重新获取
+    _baiduAccessToken = null;
+    _tokenExpireTime = null;
+    
+    developer.log('百度OCR API密钥已配置', name: 'OCRService');
   }
 
   /// 配置腾讯云OCR API密钥
+  /// 
+  /// [secretId] - 腾讯云SecretId
+  /// [secretKey] - 腾讯云SecretKey
   void configureTencentOCR({required String secretId, required String secretKey}) {
-    // 注意：实际应用中应该使用安全存储
-    // 这里仅作为示例
+    if (secretId.isEmpty || secretKey.isEmpty) {
+      throw ArgumentError('SecretId和SecretKey不能为空');
+    }
+    
+    _tencentSecretId = secretId;
+    _tencentSecretKey = secretKey;
+    
+    developer.log('腾讯云OCR API密钥已配置', name: 'OCRService');
+  }
+
+  /// 清除所有缓存
+  void clearCache() {
+    _baiduAccessToken = null;
+    _tokenExpireTime = null;
+    developer.log('OCR缓存已清除', name: 'OCRService');
+  }
+
+  /// 获取当前配置状态
+  Map<String, bool> getConfigurationStatus() {
+    return {
+      'baidu_configured': _baiduApiKey != 'YOUR_BAIDU_API_KEY' && 
+                         _baiduSecretKey != 'YOUR_BAIDU_SECRET_KEY',
+      'tencent_configured': _tencentSecretId != 'YOUR_TENCENT_SECRET_ID' && 
+                           _tencentSecretKey != 'YOUR_TENCENT_SECRET_KEY',
+      'baidu_token_valid': _baiduAccessToken != null && 
+                          _tokenExpireTime != null && 
+                          DateTime.now().isBefore(_tokenExpireTime!),
+    };
   }
 }
