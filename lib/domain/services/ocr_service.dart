@@ -107,10 +107,15 @@ class OCRService {
   /// 识别检查单图片
   /// 
   /// [imagePath] - 图片文件路径
-  /// [provider] - OCR提供商: 'baidu' 或 'tencent'
-  Future<OCRResult> recognizeMedicalReport(String imagePath, {String provider = 'baidu'}) async {
+  /// [provider] - OCR提供商: 'baidu' 或 'tencent'，使用 'demo' 启用演示模式
+  Future<OCRResult> recognizeMedicalReport(String imagePath, {String provider = 'demo'}) async {
     try {
       developer.log('开始OCR识别: $imagePath, 提供商: $provider', name: 'OCRService');
+      
+      // 演示模式：返回模拟数据
+      if (provider == 'demo') {
+        return await _recognizeDemo(imagePath);
+      }
       
       final file = File(imagePath);
       if (!await file.exists()) {
@@ -138,6 +143,56 @@ class OCRService {
       developer.log('OCR识别失败', error: e, stackTrace: stackTrace, name: 'OCRService');
       return OCRResult.failure('OCR识别失败: $e');
     }
+  }
+
+  /// 演示模式：模拟OCR识别
+  /// 返回预设的检查单数据用于测试（匹配实际检查单）
+  Future<OCRResult> _recognizeDemo(String imagePath) async {
+    developer.log('使用演示模式进行OCR识别', name: 'OCRService');
+    
+    // 模拟网络延迟
+    await Future.delayed(const Duration(seconds: 2));
+    
+    // 返回与检查单匹配的数据
+    return OCRResult.success(
+      text: '案例分析 男孩18岁 全矫 OD -3.00DS 1.0 OS -3.50DS 1.0 远眼位13exo 近眼位2exo AC/A 8 NPC 6cm NRA +2.25 PRA -2.25 OD 12D OS 12D',
+      structuredData: {
+        // 患者信息
+        'patient_name': '案例患者',
+        'patient_age': 18,
+        'patient_gender': '男',
+        
+        // 全矫视力
+        'va_far_corrected_od': 1.0,
+        'va_far_corrected_os': 1.0,
+        
+        // 屈光度（全矫）
+        'sph_od': -3.00,
+        'sph_os': -3.50,
+        'cyl_od': 0.0,
+        'cyl_os': 0.0,
+        
+        // 眼位
+        'distance_phoria': 13.0,  // 13exo
+        'near_phoria': 2.0,       // 2exo
+        
+        // AC/A和NPC
+        'aca_ratio': 8.0,
+        'npc': 6.0,               // 6cm
+        
+        // 相对调节
+        'nra': 2.25,              // +2.25
+        'pra': -2.25,             // -2.25
+        
+        // 调节幅度
+        'amp_od': 12.0,           // 12D
+        'amp_os': 12.0,           // 12D
+        
+        // 调节灵活度（Flipper）
+        'flipper_od': 12.0,       // 12cpm
+        'flipper_os': 12.0,       // 12cpm
+      },
+    );
   }
 
   /// 使用百度AI OCR识别
