@@ -59,7 +59,7 @@ class _DataEntryPageState extends State<DataEntryPage> {
             unit: '',
             type: IndicatorType.numeric,
             isRequired: false,
-            normalRanges: [],
+            ranges: [],
           ),
         );
         if (_controllers.containsKey(standard.id) && value != null) {
