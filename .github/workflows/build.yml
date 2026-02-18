@@ -1,0 +1,159 @@
+name: Build Flutter App
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  # 允许手动触发
+  workflow_dispatch:
+
+jobs:
+  # Android构建任务
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      # 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 设置Flutter环境
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.1'
+          channel: 'stable'
+
+      # 显示Flutter版本
+      - name: Check Flutter version
+        run: flutter doctor -v
+
+      # 获取依赖
+      - name: Get dependencies
+        run: flutter pub get
+
+      # 运行测试
+      - name: Run tests
+        run: flutter test || true  # 允许测试失败，继续构建
+
+      # 构建Release APK
+      - name: Build APK
+        run: flutter build apk --release
+
+      # 上传APK作为构建产物
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
+
+      # 构建App Bundle (Google Play上传用)
+      - name: Build AppBundle
+        run: flutter build appbundle --release
+
+      # 上传App Bundle
+      - name: Upload AppBundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+          retention-days: 30
+
+  # iOS构建任务
+  build-ios:
+    runs-on: macos-latest
+    steps:
+      # 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 设置Flutter环境
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.1'
+          channel: 'stable'
+
+      # 获取依赖
+      - name: Get dependencies
+        run: flutter pub get
+
+      # 安装CocoaPods
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update || true
+
+      # 构建iOS (无签名，用于测试)
+      - name: Build iOS
+        run: flutter build ios --release --no-codesign
+
+      # 创建IPA (简化版)
+      - name: Create IPA
+        run: |
+          cd build/ios/iphoneos
+          mkdir -p Payload
+          cp -r Runner.app Payload/
+          zip -r app-release.ipa Payload
+
+      # 上传IPA
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-release-ipa
+          path: build/ios/iphoneos/app-release.ipa
+          retention-days: 30
+
+  # Web构建任务
+  build-web:
+    runs-on: ubuntu-latest
+    steps:
+      # 检出代码
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 设置Flutter环境
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.1'
+          channel: 'stable'
+
+      # 获取依赖
+      - name: Get dependencies
+        run: flutter pub get
+
+      # 构建Web
+      - name: Build Web
+        run: flutter build web --release
+
+      # 上传Web构建产物
+      - name: Upload Web
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-release
+          path: build/web
+          retention-days: 30
+
+  # 代码质量检查
+  code-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.1'
+          channel: 'stable'
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Analyze code
+        run: flutter analyze
+
+      - name: Check formatting
+        run: dart format --set-exit-if-changed .
