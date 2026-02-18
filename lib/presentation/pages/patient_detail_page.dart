@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import '../../data/models/patient.dart';
-import '../../data/database/database_helper.dart';
+import '../../data/repositories/exam_repository.dart';
+import '../../data/repositories/patient_repository.dart';
+import '../../domain/usecases/manage_patients.dart';
 import 'exam_type_selection_page.dart';
+import 'data_entry_page.dart';
+import 'analysis_report_page.dart';
 
 class PatientDetailPage extends StatefulWidget {
   final Patient patient;
@@ -16,8 +20,9 @@ class PatientDetailPage extends StatefulWidget {
 }
 
 class _PatientDetailPageState extends State<PatientDetailPage> {
-  final DatabaseHelper _db = DatabaseHelper.instance;
-  List<Map<String, dynamic>> _examRecords = [];
+  final ExamRepository _examRepository = ExamRepository();
+  final PatientUseCases _patientUseCases = PatientUseCases();
+  List<ExamRecord> _examRecords = [];
   bool _isLoading = true;
 
   @override
@@ -29,13 +34,7 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
   Future<void> _loadExamRecords() async {
     setState(() => _isLoading = true);
     try {
-      final db = await _db.database;
-      final records = await db.query(
-        'exam_records',
-        where: 'patient_id = ?',
-        whereArgs: [widget.patient.id],
-        orderBy: 'exam_date DESC',
-      );
+      final records = await _examRepository.getExamsByPatientId(widget.patient.id);
       setState(() {
         _examRecords = records;
         _isLoading = false;
@@ -281,10 +280,8 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
     );
   }
 
-  Widget _buildExamRecordCard(Map<String, dynamic> record) {
-    final examDate = DateTime.fromMillisecondsSinceEpoch(record['exam_date'] as int);
-    final examType = record['exam_type'] as String;
-    final isDraft = record['is_draft'] == 1;
+  Widget _buildExamRecordCard(ExamRecord record) {
+    final isDraft = record.isDraft;
 
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -304,7 +301,7 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
           ),
         ),
         title: Text(
-          _getExamTypeName(examType),
+          _getExamTypeName(record.examType.name),
           style: const TextStyle(
             fontWeight: FontWeight.bold,
           ),
@@ -314,7 +311,7 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
           children: [
             const SizedBox(height: 4),
             Text(
-              _formatDate(examDate),
+              _formatDate(record.examDate),
               style: TextStyle(
                 color: Colors.grey[600],
                 fontSize: 13,
@@ -374,13 +371,14 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => const ExamTypeSelectionPage(),
+        builder: (context) => ExamTypeSelectionPage(
+          patientId: widget.patient.id,
+        ),
       ),
     ).then((_) => _loadExamRecords());
   }
 
   void _showEditDialog() {
-    // TODO: 实现编辑患者信息
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -390,6 +388,7 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
           Navigator.pop(context);
           _loadExamRecords();
         },
+        patientUseCases: _patientUseCases,
       ),
     );
   }
@@ -423,12 +422,7 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
 
   Future<void> _deletePatient() async {
     try {
-      final db = await _db.database;
-      await db.delete(
-        'patients',
-        where: 'id = ?',
-        whereArgs: [widget.patient.id],
-      );
+      await _patientUseCases.deletePatient.execute(widget.patient.id);
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
@@ -444,10 +438,12 @@ class _PatientDetailPageState extends State<PatientDetailPage> {
 class _EditPatientBottomSheet extends StatefulWidget {
   final Patient patient;
   final VoidCallback onUpdated;
+  final PatientUseCases patientUseCases;
 
   const _EditPatientBottomSheet({
     required this.patient,
     required this.onUpdated,
+    required this.patientUseCases,
   });
 
   @override
@@ -620,9 +616,8 @@ class _EditPatientBottomSheetState extends State<_EditPatientBottomSheet> {
     setState(() => _isSaving = true);
 
     try {
-      final db = await DatabaseHelper.instance.database;
-      final updatedPatient = Patient(
-        id: widget.patient.id,
+      await widget.patientUseCases.updatePatient.execute(
+        widget.patient.id,
         name: _nameController.text.trim(),
         age: int.parse(_ageController.text.trim()),
         gender: _gender,
@@ -632,15 +627,6 @@ class _EditPatientBottomSheetState extends State<_EditPatientBottomSheet> {
         note: _noteController.text.trim().isEmpty
             ? null
             : _noteController.text.trim(),
-        createdAt: widget.patient.createdAt,
-        updatedAt: DateTime.now(),
-      );
-
-      await db.update(
-        'patients',
-        updatedPatient.toJson(),
-        where: 'id = ?',
-        whereArgs: [widget.patient.id],
       );
 
       if (mounted) {

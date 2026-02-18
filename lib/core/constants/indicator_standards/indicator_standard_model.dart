@@ -49,6 +49,8 @@ class IndicatorStandard {
   final String description;
   final bool isRequired;
   final bool isBinocular;
+  final double? minValue;
+  final double? maxValue;
 
   const IndicatorStandard({
     required this.id,
@@ -59,6 +61,8 @@ class IndicatorStandard {
     required this.description,
     this.isRequired = true,
     this.isBinocular = true,
+    this.minValue,
+    this.maxValue,
   });
 
   IndicatorRange? checkValue(double value) {
@@ -68,5 +72,9 @@ class IndicatorStandard {
       }
     }
     return null;
+  }
+
+  List<IndicatorRange> get normalRanges {
+    return ranges.where((r) => r.level == AbnormalLevel.normal).toList();
   }
 }

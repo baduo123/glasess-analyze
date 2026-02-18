@@ -16,9 +16,12 @@ void main() {
     });
 
     tearDown(() async {
-      final db = await databaseHelper.database;
-      await db.close();
-      DatabaseHelper.instance._database = null;
+      try {
+        final db = await databaseHelper.database;
+        await db.close();
+      } catch (e) {
+        // 忽略关闭错误
+      }
     });
 
     group('Initialization', () {

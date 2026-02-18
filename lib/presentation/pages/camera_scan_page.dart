@@ -2,9 +2,17 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image_cropper/image_cropper.dart';
+import '../../domain/services/ocr_service.dart';
 
+/// 相机扫描页面
+/// 用于拍照或选择图片进行OCR识别
 class CameraScanPage extends StatefulWidget {
-  const CameraScanPage({super.key});
+  final bool showResultConfirmation;
+
+  const CameraScanPage({
+    super.key,
+    this.showResultConfirmation = true,
+  });
 
   @override
   State<CameraScanPage> createState() => _CameraScanPageState();
@@ -12,9 +20,12 @@ class CameraScanPage extends StatefulWidget {
 
 class _CameraScanPageState extends State<CameraScanPage> {
   final ImagePicker _picker = ImagePicker();
+  final OCRService _ocrService = OCRService();
+
   File? _selectedImage;
   bool _isProcessing = false;
   String? _errorMessage;
+  OCRResult? _ocrResult;
 
   Future<void> _takePhoto() async {
     try {
@@ -76,6 +87,7 @@ class _CameraScanPageState extends State<CameraScanPage> {
         setState(() {
           _selectedImage = File(croppedFile.path);
           _errorMessage = null;
+          _ocrResult = null;
         });
       }
     } catch (e) {
@@ -86,39 +98,128 @@ class _CameraScanPageState extends State<CameraScanPage> {
   Future<void> _processOCR() async {
     if (_selectedImage == null) return;
 
-    setState(() => _isProcessing = true);
+    setState(() {
+      _isProcessing = true;
+      _errorMessage = null;
+    });
 
     try {
-      // TODO: 调用后端OCR API
-      // 模拟OCR处理延迟
-      await Future.delayed(const Duration(seconds: 2));
-
-      // 模拟OCR结果
-      final mockResult = {
-        'name': '张三',
-        'age': 28,
-        'gender': '男',
-        'extractedData': {
-          '裸眼视力右': '1.0',
-          '裸眼视力左': '0.8',
-          '矫正视力右': '1.2',
-          '矫正视力左': '1.0',
-        },
-      };
+      final result = await _ocrService.recognizeMedicalReport(_selectedImage!.path);
 
       if (mounted) {
-        Navigator.pop(context, mockResult);
+        setState(() {
+          _isProcessing = false;
+          _ocrResult = result;
+        });
+
+        if (result.success) {
+          if (widget.showResultConfirmation) {
+            _showResultConfirmationDialog(result);
+          } else {
+            Navigator.pop(context, {
+              'success': true,
+              'text': result.text,
+              'extractedData': result.structuredData,
+            });
+          }
+        } else {
+          _showError(result.errorMessage ?? '识别失败');
+        }
       }
     } catch (e) {
-      setState(() => _isProcessing = false);
-      _showError('OCR识别失败: $e');
+      if (mounted) {
+        setState(() {
+          _isProcessing = false;
+        });
+        _showError('OCR识别失败: $e');
+      }
     }
+  }
+
+  void _showResultConfirmationDialog(OCRResult result) {
+    final extractedData = result.structuredData ?? {};
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('识别结果'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (extractedData.isNotEmpty) ...[
+                const Text(
+                  '提取的数据:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                ...extractedData.entries.map((entry) {
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Row(
+                      children: [
+                        Text(
+                          '${entry.key}: ',
+                          style: const TextStyle(fontWeight: FontWeight.w500),
+                        ),
+                        Text(entry.value.toString()),
+                      ],
+                    ),
+                  );
+                }),
+              ] else ...[
+                const Text('未能提取到结构化数据'),
+                const SizedBox(height: 8),
+                const Text(
+                  '原始文本:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  result.text?.substring(0, result.text!.length > 100 ? 100 : result.text!.length) ?? '',
+                  style: TextStyle(color: Colors.grey[600]),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+            },
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.pop(context, {
+                'success': true,
+                'text': result.text,
+                'extractedData': result.structuredData,
+              });
+            },
+            child: const Text('确认使用'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showError(String message) {
     setState(() => _errorMessage = message);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), backgroundColor: Colors.red),
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+        action: SnackBarAction(
+          label: '重试',
+          textColor: Colors.white,
+          onPressed: _processOCR,
+        ),
+      ),
     );
   }
 
@@ -169,7 +270,7 @@ class _CameraScanPageState extends State<CameraScanPage> {
             ),
           ),
           const SizedBox(height: 48),
-          
+
           ElevatedButton.icon(
             onPressed: _takePhoto,
             icon: const Icon(Icons.camera_alt, size: 24),
@@ -185,7 +286,7 @@ class _CameraScanPageState extends State<CameraScanPage> {
             ),
           ),
           const SizedBox(height: 16),
-          
+
           OutlinedButton.icon(
             onPressed: _pickFromGallery,
             icon: const Icon(Icons.photo_library_outlined, size: 24),
@@ -201,7 +302,7 @@ class _CameraScanPageState extends State<CameraScanPage> {
             ),
           ),
           const SizedBox(height: 32),
-          
+
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -267,7 +368,7 @@ class _CameraScanPageState extends State<CameraScanPage> {
             ),
           ),
         ),
-        
+
         if (_errorMessage != null)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16.0),
@@ -291,7 +392,7 @@ class _CameraScanPageState extends State<CameraScanPage> {
               ),
             ),
           ),
-        
+
         Container(
           padding: const EdgeInsets.all(24.0),
           decoration: BoxDecoration(
@@ -336,7 +437,11 @@ class _CameraScanPageState extends State<CameraScanPage> {
                   const SizedBox(height: 12),
                   OutlinedButton.icon(
                     onPressed: () {
-                      setState(() => _selectedImage = null);
+                      setState(() {
+                        _selectedImage = null;
+                        _ocrResult = null;
+                        _errorMessage = null;
+                      });
                     },
                     icon: const Icon(Icons.refresh),
                     label: const Text('重新选择'),

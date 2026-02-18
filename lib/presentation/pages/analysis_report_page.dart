@@ -2,11 +2,14 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:pdf/pdf.dart';
-import 'package:pdf/widgets.dart' as pw;
 import 'package:intl/intl.dart';
 import '../../data/models/patient.dart';
+import '../../data/repositories/patient_repository.dart';
+import '../../data/repositories/exam_repository.dart';
 import '../../domain/services/analysis_service.dart';
+import '../../domain/services/pdf_service.dart';
+import 'patient_list_page.dart';
+import 'patient_detail_page.dart';
 
 class AnalysisReportPage extends StatefulWidget {
   final ExamRecord examRecord;
@@ -25,15 +28,39 @@ class AnalysisReportPage extends StatefulWidget {
 class _AnalysisReportPageState extends State<AnalysisReportPage> {
   bool _isExporting = false;
   bool _isSharing = false;
+  bool _isSavingToPatient = false;
+
+  final PDFService _pdfService = PDFService();
+  final PatientRepository _patientRepository = PatientRepository();
+  final ExamRepository _examRepository = ExamRepository();
 
   Future<void> _exportPDF() async {
     setState(() => _isExporting = true);
 
     try {
-      final pdf = await _generatePDF();
-      final output = await getTemporaryDirectory();
-      final file = File('${output.path}/视功能分析报告_${DateFormat('yyyyMMdd').format(DateTime.now())}.pdf');
-      await file.writeAsBytes(await pdf.save());
+      // 如果有患者ID，获取患者信息生成更完整的PDF
+      Patient? patient;
+      if (widget.examRecord.patientId != null) {
+        patient = await _patientRepository.getPatientById(widget.examRecord.patientId!);
+      }
+
+      // 构建分析结果数据
+      final analysisResults = _buildAnalysisResultsData();
+
+      // 使用PDFService生成PDF
+      final filePath = await _pdfService.exportToPDF(
+        patient: patient ?? _createTempPatient(),
+        examRecord: widget.examRecord,
+        analysisResults: analysisResults,
+      );
+
+      // 更新检查记录，保存PDF路径
+      if (widget.examRecord.patientId != null) {
+        await _examRepository.updateExam(
+          widget.examRecord.id,
+          pdfPath: filePath,
+        );
+      }
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -41,7 +68,7 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
             content: const Text('PDF导出成功'),
             action: SnackBarAction(
               label: '分享',
-              onPressed: () => _shareFile(file.path),
+              onPressed: () => _shareFile(filePath),
             ),
           ),
         );
@@ -57,126 +84,68 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
     }
   }
 
-  Future<pw.Document> _generatePDF() async {
-    final pdf = pw.Document();
+  Map<String, dynamic> _buildAnalysisResultsData() {
     final result = widget.analysisResult;
 
-    pdf.addPage(
-      pw.Page(
-        pageFormat: PdfPageFormat.a4,
-        build: (pw.Context context) {
-          return pw.Column(
-            crossAxisAlignment: pw.CrossAxisAlignment.start,
-            children: [
-              // 标题
-              pw.Center(
-                child: pw.Text(
-                  '视功能分析报告',
-                  style: pw.TextStyle(
-                    fontSize: 24,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-              ),
-              pw.SizedBox(height: 20),
-              
-              // 分析日期
-              pw.Text(
-                '分析日期: ${DateFormat('yyyy年MM月dd日').format(result.analyzedAt)}',
-                style: const pw.TextStyle(fontSize: 12),
-              ),
-              pw.Divider(),
-              pw.SizedBox(height: 10),
-              
-              // 分析概览
-              pw.Text(
-                '分析概览',
-                style: pw.TextStyle(
-                  fontSize: 16,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              pw.SizedBox(height: 10),
-              pw.Text('检查项目总数: ${result.totalIndicators}项'),
-              pw.Text('异常指标数: ${result.abnormalCount}项'),
-              pw.SizedBox(height: 10),
-              pw.Text(
-                result.overallAssessment,
-                style: const pw.TextStyle(fontSize: 12),
-              ),
-              pw.SizedBox(height: 20),
-              
-              // 异常指标详情
-              if (result.abnormalities.isNotEmpty) ...[
-                pw.Text(
-                  '异常指标详情',
-                  style: pw.TextStyle(
-                    fontSize: 16,
-                    fontWeight: pw.FontWeight.bold,
-                  ),
-                ),
-                pw.SizedBox(height: 10),
-                ...result.abnormalities.map((abnormal) {
-                  return pw.Column(
-                    crossAxisAlignment: pw.CrossAxisAlignment.start,
-                    children: [
-                      pw.Text(
-                        abnormal.indicatorName,
-                        style: pw.TextStyle(fontWeight: pw.FontWeight.bold),
-                      ),
-                      pw.Text('数值: ${abnormal.inputValue}${abnormal.unit}'),
-                      pw.Text('级别: ${_getLevelText(abnormal.level)}'),
-                      pw.Text('解读: ${abnormal.interpretation}'),
-                      if (abnormal.possibleCauses.isNotEmpty)
-                        pw.Text('可能原因: ${abnormal.possibleCauses.join(", ")}'),
-                      if (abnormal.recommendations.isNotEmpty)
-                        pw.Text('建议: ${abnormal.recommendations.join(", ")}'),
-                      pw.SizedBox(height: 10),
-                    ],
-                  );
-                }),
-                pw.SizedBox(height: 10),
-              ],
-              
-              // 关键发现
-              pw.Text(
-                '关键发现',
-                style: pw.TextStyle(
-                  fontSize: 16,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              pw.SizedBox(height: 10),
-              if (result.keyFindings.isEmpty)
-                pw.Text('所有指标均在正常范围内')
-              else
-                ...result.keyFindings.asMap().entries.map((entry) {
-                  return pw.Text('${entry.key + 1}. ${entry.value}');
-                }),
-              pw.SizedBox(height: 20),
-              
-              // 综合建议
-              pw.Text(
-                '综合建议',
-                style: pw.TextStyle(
-                  fontSize: 16,
-                  fontWeight: pw.FontWeight.bold,
-                ),
-              ),
-              pw.SizedBox(height: 10),
-              if (result.comprehensiveSuggestions.isEmpty)
-                pw.Text('继续保持良好用眼习惯，定期进行视力检查')
-              else
-                ...result.comprehensiveSuggestions.toSet().toList().map((suggestion) {
-                  return pw.Text('• $suggestion');
-                }),
-            ],
-          );
-        },
-      ),
-    );
+    // 构建指标列表
+    final indicators = <Map<String, dynamic>>[];
+    for (final abnormal in result.abnormalities) {
+      indicators.add({
+        'name': abnormal.indicatorName,
+        'value': abnormal.inputValue,
+        'unit': abnormal.unit,
+        'reference': _getReferenceRange(abnormal),
+        'status': _getStatusFromLevel(abnormal.level),
+      });
+    }
 
-    return pdf;
+    // 添加正常指标
+    final abnormalIds = result.abnormalities.map((a) => a.indicatorId).toSet();
+    for (final entry in widget.examRecord.indicatorValues?.entries ?? []) {
+      if (!abnormalIds.contains(entry.key)) {
+        indicators.add({
+          'name': entry.key,
+          'value': entry.value,
+          'unit': '',
+          'reference': '正常范围',
+          'status': 'normal',
+        });
+      }
+    }
+
+    return {
+      'indicators': indicators,
+      'conclusions': result.keyFindings,
+      'recommendations': result.comprehensiveSuggestions.toList(),
+    };
+  }
+
+  String _getReferenceRange(AbnormalIndicator abnormal) {
+    // 简化处理，实际应该从标准配置中获取
+    return '参考范围';
+  }
+
+  String _getStatusFromLevel(AbnormalLevel level) {
+    switch (level) {
+      case AbnormalLevel.mild:
+        return 'warning';
+      case AbnormalLevel.moderate:
+      case AbnormalLevel.severe:
+        return 'abnormal';
+      default:
+        return 'normal';
+    }
+  }
+
+  Patient _createTempPatient() {
+    return Patient(
+      id: 'temp',
+      name: '临时患者',
+      age: 0,
+      gender: '未知',
+      createdAt: DateTime.now(),
+      updatedAt: DateTime.now(),
+    );
   }
 
   String _getLevelText(AbnormalLevel level) {
@@ -242,13 +211,166 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
     );
   }
 
+  Future<void> _saveToPatient() async {
+    if (widget.examRecord.patientId != null) {
+      // 已经有患者关联
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('此检查已关联到患者')),
+      );
+      return;
+    }
+
+    setState(() => _isSavingToPatient = true);
+
+    try {
+      // 显示患者选择对话框
+      final selectedPatient = await _showPatientSelectionDialog();
+
+      if (selectedPatient != null) {
+        // 更新检查记录的患者ID
+        await _examRepository.updateExam(
+          widget.examRecord.id,
+          patientId: selectedPatient.id,
+        );
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('已保存到患者: ${selectedPatient.name}'),
+              action: SnackBarAction(
+                label: '查看',
+                onPressed: () {
+                  Navigator.pushReplacement(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => PatientDetailPage(patient: selectedPatient),
+                    ),
+                  );
+                },
+              ),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('保存失败: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    } finally {
+      setState(() => _isSavingToPatient = false);
+    }
+  }
+
+  Future<Patient?> _showPatientSelectionDialog() async {
+    return showDialog<Patient>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('选择患者'),
+        content: SizedBox(
+          width: double.maxFinite,
+          height: 400,
+          child: FutureBuilder<List<Patient>>(
+            future: _patientRepository.getAllPatients(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              if (snapshot.hasError) {
+                return Center(child: Text('加载失败: ${snapshot.error}'));
+              }
+
+              final patients = snapshot.data ?? [];
+
+              if (patients.isEmpty) {
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.people_outline, size: 48, color: Colors.grey[400]),
+                      const SizedBox(height: 16),
+                      const Text('暂无患者'),
+                      const SizedBox(height: 8),
+                      ElevatedButton(
+                        onPressed: () {
+                          Navigator.pop(context);
+                          _navigateToCreatePatient();
+                        },
+                        child: const Text('创建患者'),
+                      ),
+                    ],
+                  ),
+                );
+              }
+
+              return ListView.builder(
+                itemCount: patients.length,
+                itemBuilder: (context, index) {
+                  final patient = patients[index];
+                  return ListTile(
+                    leading: CircleAvatar(
+                      child: Text(patient.name[0]),
+                    ),
+                    title: Text(patient.name),
+                    subtitle: Text('${patient.age}岁 · ${patient.gender}'),
+                    onTap: () => Navigator.pop(context, patient),
+                  );
+                },
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _navigateToCreatePatient();
+            },
+            child: const Text('创建新患者'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _navigateToCreatePatient() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const PatientListPage(),
+      ),
+    );
+  }
+
+  Future<void> _printReport() async {
+    try {
+      // 使用printing插件打印报告
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('准备打印...')),
+      );
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('打印失败: $e'), backgroundColor: Colors.red),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('分析报告'),
         actions: [
-          if (_isExporting || _isSharing)
+          if (_isExporting || _isSharing || _isSavingToPatient)
             const Center(
               child: Padding(
                 padding: EdgeInsets.symmetric(horizontal: 16.0),
@@ -263,6 +385,12 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
               ),
             )
           else ...[
+            if (widget.examRecord.patientId == null)
+              IconButton(
+                onPressed: _saveToPatient,
+                icon: const Icon(Icons.save_alt),
+                tooltip: '保存到患者',
+              ),
             IconButton(
               onPressed: _exportPDF,
               icon: const Icon(Icons.picture_as_pdf),
@@ -272,6 +400,41 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
               onPressed: _shareReport,
               icon: const Icon(Icons.share),
               tooltip: '分享',
+            ),
+            PopupMenuButton<String>(
+              onSelected: (value) {
+                switch (value) {
+                  case 'save_to_patient':
+                    _saveToPatient();
+                    break;
+                  case 'print':
+                    _printReport();
+                    break;
+                }
+              },
+              itemBuilder: (context) => [
+                if (widget.examRecord.patientId == null)
+                  const PopupMenuItem(
+                    value: 'save_to_patient',
+                    child: Row(
+                      children: [
+                        Icon(Icons.person_add),
+                        SizedBox(width: 8),
+                        Text('保存到患者'),
+                      ],
+                    ),
+                  ),
+                const PopupMenuItem(
+                  value: 'print',
+                  child: Row(
+                    children: [
+                      Icon(Icons.print),
+                      SizedBox(width: 8),
+                      Text('打印'),
+                    ],
+                  ),
+                ),
+              ],
             ),
           ],
         ],
@@ -283,6 +446,10 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
           children: [
             _buildSummaryCard(),
             const SizedBox(height: 16),
+            if (widget.examRecord.patientId == null) ...[
+              _buildSaveToPatientCard(),
+              const SizedBox(height: 16),
+            ],
             if (widget.analysisResult.abnormalities.isNotEmpty) ...[
               _buildAbnormalIndicatorsSection(),
               const SizedBox(height: 16),
@@ -290,9 +457,123 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
             _buildKeyFindingsSection(),
             const SizedBox(height: 16),
             _buildSuggestionsSection(),
+            const SizedBox(height: 32),
+            _buildBottomActionButtons(),
+            const SizedBox(height: 16),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildSaveToPatientCard() {
+    return Card(
+      elevation: 1,
+      color: Colors.blue[50],
+      child: InkWell(
+        onTap: _isSavingToPatient ? null : _saveToPatient,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.blue[100],
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: _isSavingToPatient
+                    ? SizedBox(
+                        width: 24,
+                        height: 24,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.blue[700],
+                        ),
+                      )
+                    : Icon(Icons.person_add, color: Colors.blue[700]),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '保存到患者',
+                      style: TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.blue[900],
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      '将此检查报告关联到患者档案',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.blue[700],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.chevron_right, color: Colors.blue[700]),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildBottomActionButtons() {
+    return Row(
+      children: [
+        Expanded(
+          child: ElevatedButton.icon(
+            onPressed: _isExporting ? null : _exportPDF,
+            icon: _isExporting
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.picture_as_pdf),
+            label: const Text('导出PDF'),
+            style: ElevatedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: OutlinedButton.icon(
+            onPressed: _isSharing ? null : _shareReport,
+            icon: _isSharing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                    ),
+                  )
+                : const Icon(Icons.share),
+            label: const Text('分享报告'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 

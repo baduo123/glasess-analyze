@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../data/models/patient.dart';
-import '../../data/database/database_helper.dart';
+import '../../data/repositories/patient_repository.dart';
+import '../../data/repositories/exam_repository.dart';
+import '../../domain/usecases/manage_patients.dart';
 import 'patient_detail_page.dart';
 import 'camera_scan_page.dart';
 
@@ -12,9 +14,11 @@ class PatientListPage extends StatefulWidget {
 }
 
 class _PatientListPageState extends State<PatientListPage> {
-  final DatabaseHelper _db = DatabaseHelper.instance;
+  final PatientUseCases _patientUseCases = PatientUseCases();
+  final ExamRepository _examRepository = ExamRepository();
   List<Patient> _patients = [];
   List<Patient> _filteredPatients = [];
+  Map<String, int> _patientExamCounts = {};
   bool _isLoading = true;
   final TextEditingController _searchController = TextEditingController();
   String _selectedFilter = 'all';
@@ -34,10 +38,18 @@ class _PatientListPageState extends State<PatientListPage> {
   Future<void> _loadPatients() async {
     setState(() => _isLoading = true);
     try {
-      final db = await _db.database;
-      final maps = await db.query('patients', orderBy: 'updated_at DESC');
+      final patients = await _patientUseCases.getPatientList.execute();
+      
+      // 获取每个患者的检查次数
+      final examCounts = <String, int>{};
+      for (final patient in patients) {
+        final exams = await _examRepository.getExamsByPatientId(patient.id);
+        examCounts[patient.id] = exams.length;
+      }
+      
       setState(() {
-        _patients = maps.map((e) => Patient.fromJson(e)).toList();
+        _patients = patients;
+        _patientExamCounts = examCounts;
         _filterPatients();
         _isLoading = false;
       });
@@ -205,6 +217,7 @@ class _PatientListPageState extends State<PatientListPage> {
 
   Widget _buildPatientCard(Patient patient) {
     final isChild = patient.age < 18;
+    final examCount = _patientExamCounts[patient.id] ?? 0;
     
     return Card(
       margin: const EdgeInsets.only(bottom: 12),
@@ -249,7 +262,21 @@ class _PatientListPageState extends State<PatientListPage> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const SizedBox(height: 8),
-            Text('${patient.age}岁'),
+            Row(
+              children: [
+                Text('${patient.age}岁'),
+                const SizedBox(width: 16),
+                Icon(Icons.medical_services_outlined, size: 14, color: Colors.grey[500]),
+                const SizedBox(width: 4),
+                Text(
+                  '$examCount 次检查',
+                  style: TextStyle(
+                    color: Colors.grey[600],
+                    fontSize: 13,
+                  ),
+                ),
+              ],
+            ),
             if (patient.phone != null) ...[
               const SizedBox(height: 4),
               Text(
@@ -298,6 +325,7 @@ class _PatientListPageState extends State<PatientListPage> {
       builder: (context) => _AddPatientBottomSheet(
         prefilledData: prefilledData,
         onPatientAdded: _loadPatients,
+        patientUseCases: _patientUseCases,
       ),
     );
   }
@@ -306,10 +334,12 @@ class _PatientListPageState extends State<PatientListPage> {
 class _AddPatientBottomSheet extends StatefulWidget {
   final Map<String, dynamic>? prefilledData;
   final VoidCallback onPatientAdded;
+  final PatientUseCases patientUseCases;
 
   const _AddPatientBottomSheet({
     this.prefilledData,
     required this.onPatientAdded,
+    required this.patientUseCases,
   });
 
   @override
@@ -492,10 +522,7 @@ class _AddPatientBottomSheetState extends State<_AddPatientBottomSheet> {
     setState(() => _isSaving = true);
 
     try {
-      final db = await DatabaseHelper.instance.database;
-      final now = DateTime.now();
-      final patient = Patient(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
+      await widget.patientUseCases.createPatient.execute(
         name: _nameController.text.trim(),
         age: int.parse(_ageController.text.trim()),
         gender: _gender,
@@ -505,11 +532,7 @@ class _AddPatientBottomSheetState extends State<_AddPatientBottomSheet> {
         note: _noteController.text.trim().isEmpty
             ? null
             : _noteController.text.trim(),
-        createdAt: now,
-        updatedAt: now,
       );
-
-      await db.insert('patients', patient.toJson());
 
       if (mounted) {
         Navigator.pop(context);

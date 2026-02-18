@@ -1,4 +1,5 @@
 import 'package:sqflite/sqflite.dart';
+import 'dart:developer' as developer;
 import '../database/database_helper.dart';
 import '../models/patient.dart';
 import 'package:uuid/uuid.dart';
@@ -11,6 +12,33 @@ class PatientRepository {
   final DatabaseHelper _dbHelper = DatabaseHelper.instance;
   final Uuid _uuid = const Uuid();
 
+  /// 验证患者数据
+  void _validatePatientData({
+    required String name,
+    required int age,
+    required String gender,
+    String? phone,
+  }) {
+    if (name.trim().isEmpty) {
+      throw ArgumentError('患者姓名不能为空');
+    }
+    if (name.trim().length > 50) {
+      throw ArgumentError('患者姓名不能超过50个字符');
+    }
+    if (age < 0 || age > 150) {
+      throw ArgumentError('年龄必须在0-150之间');
+    }
+    if (!['男', '女', '其他'].contains(gender)) {
+      throw ArgumentError('性别必须是"男"、"女"或"其他"');
+    }
+    if (phone != null && phone.isNotEmpty) {
+      final phoneRegExp = RegExp(r'^1[3-9]\d{9}$');
+      if (!phoneRegExp.hasMatch(phone)) {
+        throw ArgumentError('手机号格式不正确');
+      }
+    }
+  }
+
   /// 创建新患者
   Future<Patient> createPatient({
     required String name,
@@ -20,15 +48,23 @@ class PatientRepository {
     String? note,
   }) async {
     try {
-      final db = await _dbHelper.database;
-      final now = DateTime.now();
-      final patient = Patient(
-        id: _uuid.v4(),
+      // 验证输入数据
+      _validatePatientData(
         name: name,
         age: age,
         gender: gender,
         phone: phone,
-        note: note,
+      );
+
+      final db = await _dbHelper.database;
+      final now = DateTime.now();
+      final patient = Patient(
+        id: _uuid.v4(),
+        name: name.trim(),
+        age: age,
+        gender: gender,
+        phone: phone?.trim(),
+        note: note?.trim(),
         createdAt: now,
         updatedAt: now,
       );
@@ -39,8 +75,12 @@ class PatientRepository {
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
 
+      developer.log('创建患者成功: ${patient.id}', name: 'PatientRepository');
       return patient;
-    } catch (e) {
+    } on ArgumentError {
+      rethrow;
+    } catch (e, stackTrace) {
+      developer.log('创建患者失败', error: e, stackTrace: stackTrace, name: 'PatientRepository');
       throw Exception('创建患者失败: $e');
     }
   }
@@ -99,33 +139,63 @@ class PatientRepository {
     String? note,
   }) async {
     try {
+      // 验证输入数据
+      if (name != null) {
+        if (name.trim().isEmpty) {
+          throw ArgumentError('患者姓名不能为空');
+        }
+        if (name.trim().length > 50) {
+          throw ArgumentError('患者姓名不能超过50个字符');
+        }
+      }
+      if (age != null && (age < 0 || age > 150)) {
+        throw ArgumentError('年龄必须在0-150之间');
+      }
+      if (gender != null && !['男', '女', '其他'].contains(gender)) {
+        throw ArgumentError('性别必须是"男"、"女"或"其他"');
+      }
+      if (phone != null && phone.isNotEmpty) {
+        final phoneRegExp = RegExp(r'^1[3-9]\d{9}$');
+        if (!phoneRegExp.hasMatch(phone)) {
+          throw ArgumentError('手机号格式不正确');
+        }
+      }
+
       final db = await _dbHelper.database;
       final existingPatient = await getPatientById(id);
       
       if (existingPatient == null) {
-        throw Exception('患者不存在');
+        throw Exception('患者不存在: $id');
       }
 
       final updatedPatient = Patient(
         id: id,
-        name: name ?? existingPatient.name,
+        name: name?.trim() ?? existingPatient.name,
         age: age ?? existingPatient.age,
         gender: gender ?? existingPatient.gender,
-        phone: phone ?? existingPatient.phone,
-        note: note ?? existingPatient.note,
+        phone: phone?.trim() ?? existingPatient.phone,
+        note: note?.trim() ?? existingPatient.note,
         createdAt: existingPatient.createdAt,
         updatedAt: DateTime.now(),
       );
 
-      await db.update(
+      final count = await db.update(
         'patients',
         updatedPatient.toJson(),
         where: 'id = ?',
         whereArgs: [id],
       );
 
+      if (count == 0) {
+        throw Exception('更新失败，患者可能已被删除');
+      }
+
+      developer.log('更新患者成功: $id', name: 'PatientRepository');
       return updatedPatient;
-    } catch (e) {
+    } on ArgumentError {
+      rethrow;
+    } catch (e, stackTrace) {
+      developer.log('更新患者失败', error: e, stackTrace: stackTrace, name: 'PatientRepository');
       throw Exception('更新患者失败: $e');
     }
   }
@@ -135,24 +205,30 @@ class PatientRepository {
     try {
       final db = await _dbHelper.database;
       
-      // 先删除关联的检查记录
-      await db.delete(
-        'exam_records',
-        where: 'patient_id = ?',
-        whereArgs: [id],
-      );
+      // 使用事务确保数据一致性
+      await db.transaction((txn) async {
+        // 先删除关联的检查记录
+        await txn.delete(
+          'exam_records',
+          where: 'patient_id = ?',
+          whereArgs: [id],
+        );
 
-      // 再删除患者
-      final count = await db.delete(
-        'patients',
-        where: 'id = ?',
-        whereArgs: [id],
-      );
+        // 再删除患者
+        final count = await txn.delete(
+          'patients',
+          where: 'id = ?',
+          whereArgs: [id],
+        );
 
-      if (count == 0) {
-        throw Exception('患者不存在');
-      }
-    } catch (e) {
+        if (count == 0) {
+          throw Exception('患者不存在: $id');
+        }
+      });
+
+      developer.log('删除患者成功: $id', name: 'PatientRepository');
+    } catch (e, stackTrace) {
+      developer.log('删除患者失败', error: e, stackTrace: stackTrace, name: 'PatientRepository');
       throw Exception('删除患者失败: $e');
     }
   }

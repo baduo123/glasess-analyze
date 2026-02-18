@@ -3,7 +3,12 @@ import '../../data/models/patient.dart';
 import 'data_entry_page.dart';
 
 class ExamTypeSelectionPage extends StatelessWidget {
-  const ExamTypeSelectionPage({super.key});
+  final String? patientId;
+
+  const ExamTypeSelectionPage({
+    super.key,
+    this.patientId,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -74,7 +79,10 @@ class ExamTypeSelectionPage extends StatelessWidget {
                       Navigator.push(
                         context,
                         MaterialPageRoute(
-                          builder: (context) => DataEntryPage(examType: type.type),
+                          builder: (context) => DataEntryPage(
+                            examType: type.type,
+                            patientId: patientId,
+                          ),
                         ),
                       );
                     },

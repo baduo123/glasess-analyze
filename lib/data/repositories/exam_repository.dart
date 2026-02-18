@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:developer' as developer;
 import 'package:sqflite/sqflite.dart';
 import '../database/database_helper.dart';
 import '../models/patient.dart';
@@ -11,6 +12,19 @@ class ExamRepository {
 
   final DatabaseHelper _dbHelper = DatabaseHelper.instance;
   final Uuid _uuid = const Uuid();
+
+  /// 验证检查记录数据
+  void _validateExamData({
+    required ExamType examType,
+    required DateTime examDate,
+  }) {
+    if (examDate.isAfter(DateTime.now().add(const Duration(days: 1)))) {
+      throw ArgumentError('检查日期不能是未来日期');
+    }
+    if (examDate.isBefore(DateTime(1900))) {
+      throw ArgumentError('检查日期无效');
+    }
+  }
 
   /// 创建新检查记录
   Future<ExamRecord> createExam({
