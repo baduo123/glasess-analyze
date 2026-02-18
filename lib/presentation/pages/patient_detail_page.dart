@@ -1,11 +1,8 @@
 import 'package:flutter/material.dart';
 import '../../data/models/patient.dart';
 import '../../data/repositories/exam_repository.dart';
-import '../../data/repositories/patient_repository.dart';
 import '../../domain/usecases/manage_patients.dart';
 import 'exam_type_selection_page.dart';
-import 'data_entry_page.dart';
-import 'analysis_report_page.dart';
 
 class PatientDetailPage extends StatefulWidget {
   final Patient patient;

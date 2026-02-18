@@ -400,14 +400,14 @@ class _DataEntryPageState extends State<DataEntryPage> {
 
   String _getReferenceRangeText(IndicatorStandard standard) {
     if (standard.normalRanges.isEmpty) return '';
-    
+
     final range = standard.normalRanges.first;
-    if (range.min != null && range.max != null) {
-      return '${range.min} - ${range.max} ${standard.unit}';
-    } else if (range.min != null) {
-      return '≥ ${range.min} ${standard.unit}';
-    } else if (range.max != null) {
-      return '≤ ${range.max} ${standard.unit}';
+    if (range.minValue != null && range.maxValue != null) {
+      return '${range.minValue} - ${range.maxValue} ${standard.unit}';
+    } else if (range.minValue != null) {
+      return '≥ ${range.minValue} ${standard.unit}';
+    } else if (range.maxValue != null) {
+      return '≤ ${range.maxValue} ${standard.unit}';
     }
     return '';
   }

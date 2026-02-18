@@ -216,12 +216,12 @@ class _IndicatorInputState extends State<IndicatorInput> {
     if (widget.standard.normalRanges.isEmpty) return '';
 
     final range = widget.standard.normalRanges.first;
-    if (range.min != null && range.max != null) {
-      return '${range.min} - ${range.max} ${widget.standard.unit}';
-    } else if (range.min != null) {
-      return '≥ ${range.min} ${widget.standard.unit}';
-    } else if (range.max != null) {
-      return '≤ ${range.max} ${widget.standard.unit}';
+    if (range.minValue != null && range.maxValue != null) {
+      return '${range.minValue} - ${range.maxValue} ${widget.standard.unit}';
+    } else if (range.minValue != null) {
+      return '≥ ${range.minValue} ${widget.standard.unit}';
+    } else if (range.maxValue != null) {
+      return '≤ ${range.maxValue} ${widget.standard.unit}';
     }
     return '';
   }
