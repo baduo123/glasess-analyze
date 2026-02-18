@@ -51,7 +51,7 @@ dependencies:
   
   # 相机和图像
   image_picker: ^1.0.7
-  image_cropper: ^5.0.1
+  # image_cropper: ^5.0.1  # Web平台不支持，暂时禁用
   
   # 工具
   uuid: ^4.2.2
