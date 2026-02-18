@@ -5,3 +5,4 @@ export 'loading_overlay.dart';
 export 'patient_card.dart';
 export 'exam_card.dart';
 export 'indicator_input.dart';
+export 'age_specific_badge.dart';

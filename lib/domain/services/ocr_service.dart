@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'dart:developer' as developer;
+import 'package:flutter/services.dart' show rootBundle;
 
 /// OCR识别结果模型
 class OCRResult {
@@ -107,7 +108,7 @@ class OCRService {
   /// 识别检查单图片
   /// 
   /// [imagePath] - 图片文件路径
-  /// [provider] - OCR提供商: 'baidu' 或 'tencent'，使用 'demo' 启用演示模式
+  /// [provider] - OCR提供商: 'baidu', 'tencent', 'dashscope'，使用 'demo' 启用演示模式
   Future<OCRResult> recognizeMedicalReport(String imagePath, {String provider = 'demo'}) async {
     try {
       developer.log('开始OCR识别: $imagePath, 提供商: $provider', name: 'OCRService');
@@ -132,6 +133,8 @@ class OCRService {
         return await _recognizeWithBaidu(file);
       } else if (provider == 'tencent') {
         return await _recognizeWithTencent(file);
+      } else if (provider == 'dashscope') {
+        return await _recognizeWithDashScope(file);
       } else {
         return OCRResult.failure('不支持的OCR提供商: $provider');
       }
@@ -143,6 +146,272 @@ class OCRService {
       developer.log('OCR识别失败', error: e, stackTrace: stackTrace, name: 'OCRService');
       return OCRResult.failure('OCR识别失败: $e');
     }
+  }
+
+  /// 使用DashScope大模型OCR识别
+  /// 支持手写体和印刷体的眼科检查单识别
+  Future<OCRResult> _recognizeWithDashScope(File imageFile) async {
+    try {
+      // 从环境变量获取API Key
+      String? apiKey = await _getDashScopeApiKey();
+      
+      if (apiKey == null || apiKey.isEmpty || apiKey == 'YOUR_DASHSCOPE_API_KEY') {
+        return OCRResult.failure(
+          'DashScope API Key未配置\n'
+          '请设置环境变量 DASHSCOPE_API_KEY\n'
+          '或在项目根目录创建 .env 文件添加该变量'
+        );
+      }
+
+      developer.log('开始DashScope OCR识别', name: 'OCRService');
+
+      // 读取图片并转换为base64
+      final bytes = await imageFile.readAsBytes();
+      final base64Image = base64Encode(bytes);
+
+      // 构建优化Prompt
+      final prompt = _buildDashScopePrompt();
+
+      // 构建请求体
+      final requestBody = {
+        "model": "qwen-vl-max",
+        "input": {
+          "messages": [
+            {
+              "role": "user",
+              "content": [
+                {"image": "data:image/jpeg;base64,$base64Image"},
+                {"text": prompt}
+              ]
+            }
+          ]
+        },
+        "parameters": {
+          "result_format": "message"
+        }
+      };
+
+      developer.log('发送DashScope OCR请求', name: 'OCRService');
+
+      // 调用DashScope API
+      final response = await _httpPostWithRetry(
+        Uri.parse('https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'),
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Bearer $apiKey',
+        },
+        body: jsonEncode(requestBody),
+      );
+
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        
+        // 解析DashScope响应
+        final output = result['output'];
+        if (output == null) {
+          return OCRResult.failure('DashScope返回数据格式错误: 缺少output字段');
+        }
+
+        final choices = output['choices'] as List<dynamic>?;
+        if (choices == null || choices.isEmpty) {
+          return OCRResult.failure('DashScope返回数据格式错误: 缺少choices字段');
+        }
+
+        final message = choices[0]['message'];
+        if (message == null) {
+          return OCRResult.failure('DashScope返回数据格式错误: 缺少message字段');
+        }
+
+        final content = message['content'] as String?;
+        if (content == null || content.isEmpty) {
+          return OCRResult.failure('DashScope返回空内容');
+        }
+
+        developer.log('DashScope识别成功，开始解析结果', name: 'OCRService');
+
+        // 解析返回的JSON
+        final structuredData = _parseDashScopeResponse(content);
+
+        return OCRResult.success(
+          text: content,
+          structuredData: structuredData,
+        );
+      } else if (response.statusCode == 401) {
+        return OCRResult.failure('DashScope API Key无效或已过期，请检查配置');
+      } else if (response.statusCode == 429) {
+        return OCRResult.failure('DashScope API请求过于频繁，请稍后再试');
+      } else {
+        final errorBody = jsonDecode(response.body);
+        final errorMsg = errorBody['message'] ?? '未知错误';
+        developer.log('DashScope OCR请求失败: ${response.statusCode} - $errorMsg', name: 'OCRService');
+        return OCRResult.failure('DashScope OCR请求失败 (${response.statusCode}): $errorMsg');
+      }
+    } on FormatException catch (e) {
+      developer.log('DashScope返回数据解析失败', error: e, name: 'OCRService');
+      return OCRResult.failure('识别结果解析失败，请重试');
+    } on TimeoutException {
+      return OCRResult.failure('DashScope OCR识别超时，请检查网络连接');
+    } catch (e, stackTrace) {
+      developer.log('DashScope OCR识别失败', error: e, stackTrace: stackTrace, name: 'OCRService');
+      return OCRResult.failure('DashScope OCR识别失败: $e');
+    }
+  }
+
+  /// 构建DashScope优化Prompt
+  String _buildDashScopePrompt() {
+    return '''你是专业的眼科检查单识别专家。请识别图片中的检查数据。
+
+支持4类检查：
+1. 标准眼科全套（视力、屈光度、眼压）
+2. 视功能专项（调节、集合、AC/A等）
+3. 儿童弱视筛查（视力、屈光、眼位）
+4. 视疲劳评估（调节、集合相关）
+
+识别要求：
+- 支持手写体和印刷体
+- 视力使用小数记录法（如0.8, 1.0）
+- 屈光度保留2位小数（如-3.00）
+- 眼压单位为mmHg
+- 左右眼分别标记OD（右眼）和OS（左眼）
+
+请严格返回以下JSON格式（不要添加markdown标记）：
+{
+  "patient_info": {
+    "age": 18,
+    "gender": "男"
+  },
+  "standard_full_set": {
+    "va_uncorrected_od": 0.5,
+    "va_uncorrected_os": 0.6,
+    "va_corrected_od": 1.0,
+    "va_corrected_os": 1.0,
+    "sph_od": -3.00,
+    "sph_os": -3.50,
+    "cyl_od": -0.50,
+    "cyl_os": -0.25,
+    "axis_od": 180,
+    "axis_os": 90,
+    "iop_od": 16,
+    "iop_os": 15
+  },
+  "binocular_vision": {
+    "distance_phoria": -13,
+    "near_phoria": -2,
+    "aca_ratio": 8,
+    "npc": 6,
+    "nra": 2.25,
+    "pra": -2.25,
+    "amp_od": 12,
+    "amp_os": 12,
+    "flipper_od": 12,
+    "flipper_os": 12
+  },
+  "raw_text": "原始识别的文本内容"
+}
+
+注意：
+1. 所有数值字段如果没有识别到，使用null
+2. 确保JSON格式正确，可以被标准JSON解析器解析
+3. 只返回JSON，不要有其他说明文字''';
+  }
+
+  /// 获取DashScope API Key
+  /// 优先从环境变量读取，其次从配置文件读取
+  Future<String?> _getDashScopeApiKey() async {
+    // 方法1: 从dart:io的Platform.environment读取（支持桌面端）
+    try {
+      final envApiKey = Platform.environment['DASHSCOPE_API_KEY'];
+      if (envApiKey != null && envApiKey.isNotEmpty) {
+        developer.log('从环境变量读取DashScope API Key', name: 'OCRService');
+        return envApiKey;
+      }
+    } catch (e) {
+      developer.log('无法从Platform.environment读取: $e', name: 'OCRService');
+    }
+
+    // 方法2: 尝试从配置文件读取（assets/config/.env）
+    try {
+      final configContent = await rootBundle.loadString('assets/config/.env');
+      final lines = configContent.split('\n');
+      for (final line in lines) {
+        if (line.startsWith('DASHSCOPE_API_KEY=')) {
+          final apiKey = line.substring('DASHSCOPE_API_KEY='.length).trim();
+          if (apiKey.isNotEmpty) {
+            developer.log('从配置文件读取DashScope API Key', name: 'OCRService');
+            return apiKey;
+          }
+        }
+      }
+    } catch (e) {
+      developer.log('无法从配置文件读取: $e', name: 'OCRService');
+    }
+
+    // 方法3: 使用硬编码的占位符（开发调试时使用）
+    return 'YOUR_DASHSCOPE_API_KEY';
+  }
+
+  /// 解析DashScope返回的JSON响应
+  Map<String, dynamic> _parseDashScopeResponse(String content) {
+    try {
+      // 清理内容，移除可能的markdown代码块标记
+      String cleanedContent = content.trim();
+      
+      // 移除markdown代码块标记
+      if (cleanedContent.startsWith('```json')) {
+        cleanedContent = cleanedContent.substring(7);
+      } else if (cleanedContent.startsWith('```')) {
+        cleanedContent = cleanedContent.substring(3);
+      }
+      
+      if (cleanedContent.endsWith('```')) {
+        cleanedContent = cleanedContent.substring(0, cleanedContent.length - 3);
+      }
+      
+      cleanedContent = cleanedContent.trim();
+      
+      // 解析JSON
+      final parsed = jsonDecode(cleanedContent) as Map<String, dynamic>;
+      
+      developer.log('DashScope响应解析成功', name: 'OCRService');
+      
+      // 合并所有识别到的数据到一个扁平化的Map
+      final result = <String, dynamic>{};
+      
+      // 患者信息
+      if (parsed.containsKey('patient_info')) {
+        final patientInfo = parsed['patient_info'] as Map<String, dynamic>;
+        result['patient_age'] = patientInfo['age'];
+        result['patient_gender'] = patientInfo['gender'];
+      }
+      
+      // 标准眼科全套数据
+      if (parsed.containsKey('standard_full_set')) {
+        final standardSet = parsed['standard_full_set'] as Map<String, dynamic>;
+        result.addAll(standardSet);
+      }
+      
+      // 双眼视功能数据
+      if (parsed.containsKey('binocular_vision')) {
+        final binocularVision = parsed['binocular_vision'] as Map<String, dynamic>;
+        result.addAll(binocularVision);
+      }
+      
+      // 原始文本
+      if (parsed.containsKey('raw_text')) {
+        result['raw_text'] = parsed['raw_text'];
+      }
+      
+      return result;
+    } catch (e, stackTrace) {
+      developer.log('解析DashScope响应失败', error: e, stackTrace: stackTrace, name: 'OCRService');
+      // 如果解析失败，返回原始内容
+      return {'raw_text': content};
+    }
+  }
+
+  /// 直接使用DashScope识别（公共方法）
+  Future<OCRResult> recognizeWithDashScope(String imagePath) async {
+    return recognizeMedicalReport(imagePath, provider: 'dashscope');
   }
 
   /// 演示模式：模拟OCR识别

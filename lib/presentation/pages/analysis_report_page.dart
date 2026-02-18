@@ -7,8 +7,11 @@ import '../../data/models/patient.dart';
 import '../../data/repositories/patient_repository.dart';
 import '../../data/repositories/exam_repository.dart';
 import '../../domain/services/analysis_service.dart';
+import '../../domain/services/age_based_analysis_service.dart';
 import '../../domain/services/pdf_service.dart';
 import '../../core/constants/indicator_standards/indicator_standard_model.dart';
+import '../../core/utils/age_utils.dart';
+import '../widgets/age_specific_badge.dart';
 import 'patient_list_page.dart';
 import 'patient_detail_page.dart';
 
@@ -30,10 +33,32 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
   bool _isExporting = false;
   bool _isSharing = false;
   bool _isSavingToPatient = false;
+  Patient? _patient;
+  bool _isLoadingPatient = false;
 
   final PDFService _pdfService = PDFService();
   final PatientRepository _patientRepository = PatientRepository();
   final ExamRepository _examRepository = ExamRepository();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadPatient();
+  }
+
+  Future<void> _loadPatient() async {
+    if (widget.examRecord.patientId == null) return;
+    
+    setState(() => _isLoadingPatient = true);
+    try {
+      final patient = await _patientRepository.getPatientById(widget.examRecord.patientId!);
+      setState(() => _patient = patient);
+    } catch (e) {
+      // 忽略错误
+    } finally {
+      setState(() => _isLoadingPatient = false);
+    }
+  }
 
   Future<void> _exportPDF() async {
     setState(() => _isExporting = true);
@@ -447,6 +472,10 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
           children: [
             _buildSummaryCard(),
             const SizedBox(height: 16),
+            if (_patient != null) ...[
+              _buildAgeAnalysisCard(),
+              const SizedBox(height: 16),
+            ],
             if (widget.examRecord.patientId == null) ...[
               _buildSaveToPatientCard(),
               const SizedBox(height: 16),
@@ -458,11 +487,224 @@ class _AnalysisReportPageState extends State<AnalysisReportPage> {
             _buildKeyFindingsSection(),
             const SizedBox(height: 16),
             _buildSuggestionsSection(),
+            const SizedBox(height: 16),
+            const AgeAnalysisLegend(),
             const SizedBox(height: 32),
             _buildBottomActionButtons(),
             const SizedBox(height: 16),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildAgeAnalysisCard() {
+    if (_patient == null) return const SizedBox.shrink();
+
+    final age = _patient!.age;
+    final ageGroup = AgeUtils.getGroup(age);
+    final groupColor = AgeUtils.getGroupColor(age);
+    final backgroundColor = AgeUtils.getGroupBackgroundColor(age);
+
+    return Card(
+      elevation: 2,
+      color: backgroundColor,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: groupColor.withOpacity(0.3)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: groupColor.withOpacity(0.15),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Icon(
+                    _getAgeGroupIcon(ageGroup),
+                    color: groupColor,
+                    size: 28,
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '年龄分析',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                          color: groupColor,
+                        ),
+                      ),
+                      Text(
+                        '基于${AgeUtils.getGroupName(age)}标准',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.grey[700],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(color: groupColor.withOpacity(0.3)),
+                  ),
+                  child: Text(
+                    '$age岁',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: groupColor,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const Divider(height: 32),
+            _buildAgeSpecificInfo(age, ageGroup),
+            const SizedBox(height: 16),
+            if (widget.analysisResult is AgeBasedAnalysisResult) ...[
+              _buildAgeBasedAdjustments(),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _getAgeGroupIcon(AgeGroup group) {
+    switch (group) {
+      case AgeGroup.child:
+        return Icons.child_care;
+      case AgeGroup.adult:
+        return Icons.person;
+      case AgeGroup.elderly:
+        return Icons.elderly;
+    }
+  }
+
+  Widget _buildAgeSpecificInfo(int age, AgeGroup ageGroup) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          AgeUtils.getAgeGroupDescription(age),
+          style: TextStyle(
+            fontSize: 14,
+            color: Colors.grey[800],
+            height: 1.6,
+          ),
+        ),
+        const SizedBox(height: 12),
+        ...AgeUtils.getAgeSpecificNotes(age).map((note) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.check_circle,
+                color: AgeUtils.getGroupColor(age).withOpacity(0.7),
+                size: 16,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  note,
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: Colors.grey[700],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        )),
+      ],
+    );
+  }
+
+  Widget _buildAgeBasedAdjustments() {
+    final ageBasedResult = widget.analysisResult as AgeBasedAnalysisResult;
+    final adjustments = ageBasedResult.ageBasedAdjustments;
+
+    if (adjustments.isEmpty) return const SizedBox.shrink();
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.7),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.auto_fix_high, size: 18, color: Colors.grey[700]),
+              const SizedBox(width: 8),
+              Text(
+                '年龄校正指标',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: Colors.grey[800],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...adjustments.entries.map((entry) {
+            final data = entry.value as Map<String, dynamic>;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 2,
+                    child: Text(
+                      entry.key,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ),
+                  Text(
+                    '${data['originalValue']}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.grey[800],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(Icons.arrow_forward, size: 14, color: Colors.grey[400]),
+                  const SizedBox(width: 8),
+                  Text(
+                    '${data['adjustedValue']}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.grey[800],
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
       ),
     );
   }

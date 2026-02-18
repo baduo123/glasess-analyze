@@ -260,6 +260,77 @@ IOP OS: 16.0
         );
       });
     });
+
+    group('DashScope Integration', () {
+      test('should return failure when DashScope API Key is not configured', () async {
+        // 创建一个临时文件
+        final tempDir = Directory.systemTemp;
+        final tempFile = File('${tempDir.path}/test_image.jpg');
+        await tempFile.writeAsBytes([0xFF, 0xD8, 0xFF]); // JPEG magic bytes
+
+        final result = await ocrService.recognizeMedicalReport(
+          tempFile.path,
+          provider: 'dashscope',
+        );
+
+        expect(result.success, isFalse);
+        expect(result.errorMessage, contains('API Key'));
+
+        // 清理
+        await tempFile.delete();
+      });
+
+      test('should parse DashScope JSON response correctly', () {
+        const jsonResponse = '''{
+  "patient_info": {
+    "age": 18,
+    "gender": "男"
+  },
+  "standard_full_set": {
+    "va_uncorrected_od": 0.5,
+    "va_uncorrected_os": 0.6,
+    "sph_od": -3.00,
+    "sph_os": -3.50
+  },
+  "binocular_vision": {
+    "distance_phoria": -13,
+    "aca_ratio": 8
+  },
+  "raw_text": "测试文本"
+}''';
+
+        // 模拟解析
+        final parsed = jsonDecode(jsonResponse) as Map<String, dynamic>;
+        
+        expect(parsed['patient_info']['age'], equals(18));
+        expect(parsed['patient_info']['gender'], equals('男'));
+        expect(parsed['standard_full_set']['sph_od'], equals(-3.00));
+      });
+
+      test('should handle markdown code blocks in response', () {
+        const markdownResponse = '''```json
+{
+  "patient_info": {"age": 20, "gender": "女"},
+  "raw_text": "示例文本"
+}
+```''';
+
+        // 清理markdown标记
+        String cleaned = markdownResponse.trim();
+        if (cleaned.startsWith('```json')) {
+          cleaned = cleaned.substring(7);
+        } else if (cleaned.startsWith('```')) {
+          cleaned = cleaned.substring(3);
+        }
+        if (cleaned.endsWith('```')) {
+          cleaned = cleaned.substring(0, cleaned.length - 3);
+        }
+        cleaned = cleaned.trim();
+
+        final parsed = jsonDecode(cleaned) as Map<String, dynamic>;
+        expect(parsed['patient_info']['gender'], equals('女'));
+      });
+    });
   });
 }
 

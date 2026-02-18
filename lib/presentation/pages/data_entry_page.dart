@@ -2,8 +2,11 @@ import 'package:flutter/material.dart';
 import '../../data/models/patient.dart';
 import '../../core/constants/indicator_standards/indicator_standard_model.dart';
 import '../../domain/services/analysis_service.dart';
+import '../../domain/services/ai_report_service.dart';
 import 'analysis_report_page.dart';
 import 'camera_scan_page.dart';
+import 'comprehensive_report_page.dart';
+import 'multi_exam_entry_page.dart';
 
 class DataEntryPage extends StatefulWidget {
   final ExamType examType;
@@ -162,6 +165,21 @@ class _DataEntryPageState extends State<DataEntryPage> {
       appBar: AppBar(
         title: const Text('数据录入'),
         actions: [
+          TextButton.icon(
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => MultiExamEntryPage(
+                    patientId: widget.patientId,
+                  ),
+                ),
+              );
+            },
+            icon: const Icon(Icons.playlist_add, color: Colors.white),
+            label: const Text('多项检查', style: TextStyle(color: Colors.white)),
+          ),
+          const SizedBox(width: 8),
           TextButton.icon(
             onPressed: _saveDraft,
             icon: const Icon(Icons.save_outlined, color: Colors.white),
@@ -451,6 +469,113 @@ class _DataEntryPageState extends State<DataEntryPage> {
       return;
     }
 
+    // 显示报告类型选择对话框
+    _showReportTypeSelection();
+  }
+
+  void _showReportTypeSelection() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => Container(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              '选择报告类型',
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 20),
+            _buildReportTypeOption(
+              icon: Icons.analytics,
+              color: Colors.blue,
+              title: '标准分析报告',
+              subtitle: '基于规则的标准分析',
+              onTap: () {
+                Navigator.pop(context);
+                _generateStandardReport();
+              },
+            ),
+            const SizedBox(height: 12),
+            _buildReportTypeOption(
+              icon: Icons.psychology,
+              color: Colors.purple,
+              title: 'AI综合报告',
+              subtitle: 'AI智能生成专业报告',
+              onTap: () {
+                Navigator.pop(context);
+                _generateAIReport();
+              },
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildReportTypeOption({
+    required IconData icon,
+    required Color color,
+    required String title,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
+    return Card(
+      elevation: 2,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Icon(icon, color: color, size: 28),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      subtitle,
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.grey[600],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Icon(Icons.arrow_forward_ios, color: Colors.grey[400], size: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _generateStandardReport() {
     setState(() => _isLoading = true);
 
     final examRecord = ExamRecord(
@@ -475,5 +600,49 @@ class _DataEntryPageState extends State<DataEntryPage> {
         ),
       ),
     );
+  }
+
+  void _generateAIReport() async {
+    setState(() => _isLoading = true);
+
+    try {
+      // 创建临时患者或使用已有患者
+      final patient = Patient(
+        id: widget.patientId ?? 'temp_${DateTime.now().millisecondsSinceEpoch}',
+        name: '临时患者',
+        age: 30,
+        gender: '未知',
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+
+      // 创建检查数据项
+      final examItem = ExamDataItem(
+        examType: widget.examType,
+        indicatorValues: _indicatorValues,
+        examDate: DateTime.now(),
+      );
+
+      setState(() => _isLoading = false);
+
+      // 导航到AI综合报告页面
+      Navigator.push(
+        context,
+        MaterialPageRoute(
+          builder: (context) => ComprehensiveReportPage(
+            patient: patient,
+            examItems: [examItem],
+          ),
+        ),
+      );
+    } catch (e) {
+      setState(() => _isLoading = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('生成AI报告失败: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 }
